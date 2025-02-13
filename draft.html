@@ -1,0 +1,2166 @@
+<script>
+//backend/middleware/authMiddleware.js
+const jwt = require("jsonwebtoken");
+const { User } = require("../models/User");
+
+
+const authenticate = async (req, res, next) => {
+    const token = req.header("Authorization")?.split(" ")[1]; // Get token from headers
+
+    if (!token) {
+        return res.status(401).json({ message: "Unauthorized: No token provided" });
+    }
+
+    try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        req.user = await User.findById(decoded.id).select("-password"); // Attach user to req
+        next();
+    } catch (error) {
+        res.status(401).json({ message: "Invalid or expired token" });
+    }
+};
+
+module.exports = { authenticate };
+</script>
+<script>
+//backend/models/Course.js
+const mongoose = require("mongoose")
+
+const CourseSchema = new mongoose.Schema({
+  courseCode: {
+    type: String,
+    required: true,
+    unique: true,
+  },
+  courseName: {
+    type: String,
+    required: true,
+  },
+  department: {
+    type: String,
+    required: true,
+  },
+  credits: {
+    type: Number,
+    required: true,
+  },
+  createdAt: {
+    type: Date,
+    default: Date.now,
+  },
+})
+
+module.exports = mongoose.model("Course", CourseSchema)
+</script>
+<script>
+    //backend/models/User.js
+const mongoose = require("mongoose")
+const { Schema } = mongoose
+
+// User Schema
+const UserSchema = new mongoose.Schema(
+  {
+    email: { type: String, required: true, unique: true },
+    password: { type: String, required: true },
+    firstName: { type: String, required: true },
+    lastName: { type: String, required: true },
+    role: { type: String, enum: ["Admin", "Lecturer", "Student"], required: true },
+    dateOfBirth: { type: Date },
+    gender: { type: String, enum: ["Male", "Female", "Other"] },
+    contactNumber: { type: String },
+    address: { type: String },
+    emergencyContact: {
+      name: String,
+      phone: String,
+    },
+    department: { type: String },
+    profilePicture: { type: String, default: null },
+    isActive: { type: Boolean, default: true },
+  },
+  { timestamps: true, discriminatorKey: "role" },
+)
+
+// Base User Model
+const User = mongoose.model("User", UserSchema)
+
+// Admin Schema
+const AdminSchema = new Schema({
+  permissions: [{ type: String }], // e.g., ['ManageUsers', 'EditCourses']
+  position: { type: String },
+})
+
+// Lecturer Schema
+const LecturerSchema = new Schema({
+  lecturerId: { type: String, unique: true },
+  qualifications: [String],
+  position: { type: String },
+  officeHours: { type: String },
+  courses: [{ type: Schema.Types.ObjectId, ref: "Course" }],
+  specialization: { type: String },
+  bio: { type: String },
+})
+
+// Student Schema
+const StudentSchema = new Schema({
+  studentId: { type: String, unique: true },
+  enrollmentDate: { type: Date },
+  academicYear: { type: String },
+  coursesEnrolled: [
+    {
+      courseId: { type: Schema.Types.ObjectId, ref: "Course" },
+      status: { type: String, enum: ["Active", "Completed", "Dropped"], default: "Active" },
+      progress: { type: Number, default: 0 }, // Course completion percentage
+    },
+  ],
+  address: {
+    street: { type: String },
+    city: { type: String },
+    state: { type: String },
+    postalCode: { type: String },
+  },
+})
+
+// Discriminator Models
+const Admin = User.discriminator("Admin", AdminSchema)
+const Lecturer = User.discriminator("Lecturer", LecturerSchema)
+const Student = User.discriminator("Student", StudentSchema)
+
+module.exports = { User, Admin, Lecturer, Student }
+</script>
+<script>
+    //backend/routes/auth.js
+const express = require("express");
+const jwt = require("jsonwebtoken");
+const bcrypt = require("bcryptjs");
+const { User } = require("../models/User");
+const router = express.Router();
+
+// Login Route
+router.post("/login", async (req, res) => {
+    const { email, password } = req.body;
+
+    // Input validation
+    if (!email || !password) {
+        return res.status(400).json({ message: "Email and password are required" });
+    }
+
+    try {
+        // Find the user by email
+        const user = await User.findOne({ email });
+        if (!user) {
+            return res.status(404).json({ message: "User not found" });
+        }
+
+        // Compare provided password with hashed password
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch) {
+            return res.status(401).json({ message: "Invalid credentials" });
+        }
+
+        // Generate JWT
+        const token = jwt.sign(
+            { id: user._id, role: user.role },
+            process.env.JWT_SECRET,
+            { expiresIn: "1h" }
+        );
+
+        // Send response
+        res.status(200).json({
+            token,
+            role: user.role, // Make sure this is sent in the response
+            user: {
+                userId: user._id,
+                email: user.email,
+                firstName: user.firstName,
+                lastName: user.lastName,
+                position: user.position,
+                role: user.role,
+                profilePicture: user.profilePicture,
+                contactNumber: user.contactNumber,
+                isActive: user.isActive,
+            },
+        });
+    } catch (err) {
+        console.error("Server error during login:", err.message);
+        res.status(500).json({ message: "Server error" });
+    }
+});
+
+module.exports = router;
+
+</script>
+
+<script>
+    //backend/routes/course.js
+    const express = require("express");
+const Course = require("../models/Course");
+const { authenticate } = require("../middleware/authMiddleware");
+const router = express.Router();
+
+// GET all courses
+router.get("/", authenticate, async (req, res) => {
+  try {
+    const courses = await Course.find();
+    res.json(courses);
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).send("Server Error");
+  }
+});
+
+// POST create a new course
+router.post("/", authenticate, async (req, res) => {
+  const { courseCode, courseName, department, credits } = req.body;
+
+  try {
+    const course = new Course({
+      courseCode,
+      courseName,
+      department,
+      credits,
+    });
+
+    await course.save();
+    res.json(course);
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).send("Server Error");
+  }
+});
+
+// PUT update a course
+router.put("/:id", authenticate, async (req, res) => {
+  const { courseCode, courseName, department, credits } = req.body;
+
+  try {
+    const course = await Course.findById(req.params.id);
+
+    if (!course) {
+      return res.status(404).json({ msg: "Course not found" });
+    }
+
+    course.courseCode = courseCode;
+    course.courseName = courseName;
+    course.department = department;
+    course.credits = credits;
+
+    await course.save();
+    res.json(course);
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).send("Server Error");
+  }
+});
+
+// DELETE a course (Fixed)
+router.delete("/:id", authenticate, async (req, res) => {
+  try {
+    const course = await Course.findById(req.params.id);
+
+    if (!course) {
+      return res.status(404).json({ msg: "Course not found" });
+    }
+
+    // Corrected delete method
+    await Course.findByIdAndDelete(req.params.id);
+
+    res.json({ msg: "Course removed" });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).send("Server Error");
+  }
+});
+
+module.exports = router;
+
+</script>
+<script>
+    //backend/routes/user.js
+    const express = require('express');
+const multer = require('multer');
+const path = require('path');
+const User = require('../models/User'); // Assuming you have a User model
+const { authenticate } = require("../middleware/authMiddleware");
+const jwt = require('jsonwebtoken');
+const router = express.Router();
+
+// Set up multer for profile picture upload
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        cb(null, 'uploads/profile-pictures');
+    },
+    filename: (req, file, cb) => {
+        const uniqueSuffix = Date.now() + path.extname(file.originalname);
+        cb(null, file.fieldname + '-' + uniqueSuffix);
+    }
+});
+const upload = multer({ storage });
+
+// Middleware to authenticate token and set req.user
+const authenticateToken = (req, res, next) => {
+    const token = req.headers['authorization']?.split(' ')[1]; // Assuming Bearer token format
+    if (!token) {
+        return res.status(401).json({ message: 'Authentication token is missing' });
+    }
+
+    jwt.verify(token, 'your-secret-key', (err, user) => {
+        if (err) return res.status(403).json({ message: 'Invalid or expired token' });
+        req.user = user;
+        next();
+    });
+};
+
+// GET user profile (returns profile details)
+router.get('/profile', authenticateToken, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id); // Use the authenticated user's ID
+        if (!user) return res.status(404).json({ message: 'User not found' });
+        res.json(user); // Return user profile data
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+});
+
+// POST user profile (update details)
+router.post('/profile', authenticateToken, upload.single('profilePicture'), async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id); // Use the authenticated user's ID
+        if (!user) return res.status(404).json({ message: 'User not found' });
+
+        // Update user details
+        user.firstName = req.body.firstName || user.firstName;
+        user.lastName = req.body.lastName || user.lastName;
+        user.position = req.body.position || user.position;
+        user.email = req.body.email || user.email;
+        user.contactNumber = req.body.contactNumber || user.contactNumber;
+
+        // If a new profile picture is uploaded, update the profile picture URL
+        if (req.file) {
+            user.profilePicture = `/uploads/profile-pictures/${req.file.filename}`;
+        }
+
+        await user.save();
+        res.json({ message: 'Profile updated successfully', user });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+});
+
+// PUT user profile (update profile based on ID)
+router.put('/profile/:id', authenticateToken, async (req, res) => {
+    try {
+        const user = await User.findById(req.params.id); // Use the ID passed in the URL
+        if (!user) return res.status(404).json({ message: 'User not found' });
+
+        // If the user is not an admin, they can only update their own profile
+        if (req.user.id !== user.id && req.user.role !== 'admin') {
+            return res.status(403).json({ message: 'You are not authorized to update this profile' });
+        }
+
+        // Update user details
+        user.firstName = req.body.firstName || user.firstName;
+        user.lastName = req.body.lastName || user.lastName;
+        user.position = req.body.position || user.position;
+        user.email = req.body.email || user.email;
+        user.contactNumber = req.body.contactNumber || user.contactNumber;
+
+        await user.save();
+        res.json({ message: 'Profile updated successfully', user });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+});
+
+// POST route for adding a new lecturer
+router.post("/lecturer", authenticate, async (req, res) => {
+    try {
+      const {
+        firstName,
+        lastName,
+        email,
+        dateOfBirth,
+        gender,
+        contactNumber,
+        address,
+        emergencyContact,
+        department,
+        qualifications,
+        position,
+        officeHours,
+        courses,
+        specialization,
+        bio,
+      } = req.body
+  
+      // Check if user already exists
+      let user = await User.findOne({ email })
+      if (user) {
+        return res.status(400).json({ message: "User already exists" })
+      }
+  
+      // Generate a random password
+      const password = Math.random().toString(36).slice(-8)
+      const salt = await bcrypt.genSalt(10)
+      const hashedPassword = await bcrypt.hash(password, salt)
+  
+      // Create new lecturer
+      user = new Lecturer({
+        firstName,
+        lastName,
+        email,
+        password: hashedPassword,
+        role: "Lecturer",
+        dateOfBirth,
+        gender,
+        contactNumber,
+        address,
+        emergencyContact,
+        department,
+        qualifications,
+        position,
+        officeHours,
+        courses,
+        lecturerId: generateLecturerId(),
+        specialization,
+        bio,
+      })
+  
+      await user.save()
+  
+      // TODO: Send email to lecturer with their credentials
+  
+      res.status(201).json({ message: "Lecturer added successfully" })
+    } catch (error) {
+      console.error("Error adding lecturer:", error)
+      res.status(500).json({ message: "Server error" })
+    }
+  })
+  
+  // POST route for adding a new student
+  router.post("/student", authenticate, async (req, res) => {
+    try {
+      const {
+        firstName,
+        lastName,
+        email,
+        dateOfBirth,
+        gender,
+        contactNumber,
+        address,
+        emergencyContact,
+        department,
+        enrollmentDate,
+        academicYear,
+      } = req.body
+  
+      // Check if user already exists
+      let user = await User.findOne({ email })
+      if (user) {
+        return res.status(400).json({ message: "User already exists" })
+      }
+  
+      // Generate a random password
+      const password = Math.random().toString(36).slice(-8)
+      const salt = await bcrypt.genSalt(10)
+      const hashedPassword = await bcrypt.hash(password, salt)
+  
+      // Create new student
+      user = new Student({
+        firstName,
+        lastName,
+        email,
+        password: hashedPassword,
+        role: "Student",
+        dateOfBirth,
+        gender,
+        contactNumber,
+        address,
+        emergencyContact,
+        department,
+        enrollmentDate,
+        academicYear,
+        studentId: generateStudentId(),
+      })
+  
+      await user.save()
+  
+      // TODO: Send email to student with their credentials
+  
+      res.status(201).json({ message: "Student added successfully" })
+    } catch (error) {
+      console.error("Error adding student:", error)
+      res.status(500).json({ message: "Server error" })
+    }
+  })
+  
+  // Helper function to generate lecturer ID
+  function generateLecturerId() {
+    return "L" + Math.random().toString().slice(2, 8)
+  }
+  
+  // Helper function to generate student ID
+  function generateStudentId() {
+    return "S" + Math.random().toString().slice(2, 8)
+  }
+  
+
+module.exports = router;
+
+</script>
+<script>
+    //backend/server.js
+const express = require("express");
+const mongoose = require("mongoose");
+const dotenv = require("dotenv");
+const cors = require("cors");
+const bodyParser = require("body-parser");
+const userRoutes = require('./routes/user');
+const courseRoutes = require("./routes/course");
+const profileRoutes = require("./routes/profile");
+const adminRoutes = require("./routes/admin")
+const studentRoutes = require("./routes/student")
+const lecturerRoutes = require("./routes/lecturer")
+
+
+
+dotenv.config();
+
+const app = express();
+
+// Middleware
+app.use(cors());
+app.use(bodyParser.json());
+
+// Routes
+const authRoutes = require("./routes/auth");
+app.use("/api/auth", authRoutes);
+app.use('/api/user', userRoutes);
+app.use('/api/course', courseRoutes);
+app.use('/api/profile', profileRoutes);
+app.use('/api/admin', adminRoutes);
+app.use('/api/student', studentRoutes);
+app.use('/api/lecturer', lecturerRoutes);
+
+
+
+// MongoDB Connection
+mongoose
+    .connect(process.env.MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
+    .then(() => console.log("MongoDB connected"))
+    .catch((err) => console.error(err));
+
+// Start the Server
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+</script>
+
+<script>
+    //backend/seedAdmin.js
+require("dotenv").config();
+const mongoose = require("mongoose");
+const bcrypt = require("bcryptjs");
+const { Admin } = require("./models/User");
+
+// MongoDB Connection
+const connectDB = async () => {
+    try {
+        await mongoose.connect(process.env.MONGO_URI, {
+            useNewUrlParser: true,
+            useUnifiedTopology: true,
+        });
+        console.log("MongoDB connected...");
+    } catch (err) {
+        console.error("Error connecting to MongoDB:", err.message);
+        process.exit(1);
+    }
+};
+
+// Seed Admin User
+const seedAdmin = async () => {
+    await connectDB();
+
+    try {
+        const adminExists = await Admin.findOne({ email: "eneequaye@cesstig.com" });
+
+        if (adminExists) {
+            console.log("Admin user already exists.");
+        } else {
+            const hashedPassword = await bcrypt.hash("CST@eneequaye!#", 10); // Default password
+            const admin = new Admin({
+                userId: "ADMIN002",
+                email: "eneequaye@cesstig.com",
+                password: hashedPassword,
+                firstName: "Emmanuel",
+                lastName: "Neequaye",
+                position: "System Administrator",
+                role: "Admin",
+                profilePicture: null,
+                contactNumber: "0559340192",
+                department: "System Administration",
+                permissions: ["ManageUsers", "EditCourses", "ViewReports"],
+            });
+
+            await admin.save();
+            console.log("Default admin user created successfully!");
+        }
+    } catch (err) {
+        console.error("Error creating admin user:", err.message);
+    } finally {
+        mongoose.connection.close();
+    }
+};
+
+seedAdmin();
+
+</script>
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin | CESSTIG</title>
+    <!-- Bootstrap CSS -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css">
+
+    <!-- Font Awesome CSS -->
+     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.6.0/css/all.min.css">
+     <link rel="stylesheet" href="css/admin.css">
+     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css">
+     <link rel="icon" type="image/png" href="img/logo.png">
+    
+     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+     <script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.11.6/dist/umd/popper.min.js"></script>
+</head>
+<body>
+<!--------------------------------------------------------------------------------Header------------------------->
+<div class="header">
+    <div class="logo">
+        <img src="img/logo.png" alt="Logo">
+        <h2 class="text-white">CESSTIG</h2>
+    </div>
+    <div class="user d-flex align-items-center gap-3">
+        <div class="notification position-relative">
+            <i class="fas fa-bell"></i>
+            <span class="position-absolute top-0 start-100 translate-middle badge bg-danger text-white rounded-pill">0</span>
+        </div>
+        <div class="profile">
+            <img id="profile-pic" src="https://randomuser.me/api/portraits/men/85.jpg" alt="Profile Picture" class="img-fluid rounded-circle" width="50" height="50">
+            <span id="profile-name" class="text-white">Username</span>
+        </div>
+    </div>
+</div>
+
+<!--------------------------------------------------Navbar------------------------------------------>
+<div class="navbar navbar-expand-lg">
+    <div class="container">
+        <div class="collapse navbar-collapse" id="navbarNav">
+            <div class="nav-menu" id="nav-menu">
+                <ul class="navbar-nav">
+                    <li class="nav-item"><a href="#" class="nav-link active" data-target="#dashboard"><i class="fas fa-tachometer-alt"></i>Dashboard</a></li>
+                    <li class="nav-item"><a href="#" class="nav-link" data-target="#my-profile"><i class="fas fa-user"></i>My Profile</a></li>
+                    <li class="nav-item"><a href="#" class="nav-link" data-target="#manage-courses"><i class="fas fa-book"></i>Manage Courses</a></li>
+                    <li class="nav-item"><a href="#" class="nav-link" data-target="#add-lecturers"><i class="fas fa-chalkboard-teacher"></i>Add Lecturers</a></li>
+                    <li class="nav-item"><a href="#" class="nav-link" data-target="#add-students"><i class="fas fa-user-graduate"></i>Add Students</a></li>
+                    <li class="nav-item"><a href="#" class="nav-link" data-target="#manage-users"><i class="fas fa-users"></i>Manage Users</a></li>
+                    <li class="nav-item"><a href="#" class="nav-link" data-target="#view-reports"><i class="fas fa-chart-line"></i>View Reports</a></li>
+                    <li class="nav-item"><a href="#" class="nav-link" data-target="#create-event"><i class="fas fa-calendar-plus"></i>Create Event</a></li>
+                    <li class="nav-item"><a href="#" class="nav-link" id="logout"><i class="fas fa-sign-out-alt"></i>Logout</a></li>
+                </ul>
+            </div>
+           
+        </div>
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+    </div>
+</div>
+
+<!--------------------------------------------------------------------------------Main Content Area ( should display content of nav-menu------------------------------------>
+<div class="container" id="main-content">
+    <div class="row">
+        <div class="col-md-12">
+            <div class="content" id="contentArea">
+                <!--------------------------------------------------------Dashboard----------------------------------------------->
+                <div id="dashboard" class="content-section">
+                    <div class="dashboard-header d-flex justify-content-between align-items-center mb-4">
+                        <h2>Welcome Back, Admin</h2>
+                        <div class="date-time">
+                            <span id="current-date"></span> | <span id="current-time"></span>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-md-3">
+                            <div class="card bg-primary text-white">
+                                <div class="card-body">
+                                    <h5 class="card-title">Total Students</h5>
+                                    <p class="card-text" id="total-students">0</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="card bg-secondary text-white">
+                                <div class="card-body">
+                                    <h5 class="card-title">Total Lecturers</h5>
+                                    <p class="card-text" id="total-lecturers">0</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="card bg-success text-white">
+                                <div class="card-body">
+                                    <h5 class="card-title">Total Courses</h5>
+                                    <p class="card-text" id="total-courses">0</p>
+                                </div>
+                            </div>
+                        </div>                        
+                    </div>
+                </div>
+
+                <!--------------------------------------------------------My Profile----------------------------------------------->
+                <div id="my-profile" class="content-section d-none">
+                    <div class="col-md-6 mx-auto">
+                        <div class="card bg-white text-dark">
+                            <div class="card-body">
+                                <div class="text-center d-flex justify-content-center">
+                                    <!-- Profile Image -->
+                                    <img id="profileImage" src="img/user.jpg" alt="User Image" class="img-fluid rounded-circle" style="width: 100px;">
+                                </div>
+                                <div class="text-center d-flex justify-content-center">
+                                <label for="upload-pic" class="btn btn-outline-secondary btn-sm">
+                                    Upload New Picture
+                                    <input type="file" id="upload-pic" class="d-none">
+                                </label>
+                                </div>
+                                <h3 id="userFullName" class="text-center my-3">Full Name</h3>
+                                <p id="userPosition" class="text-center"><i class="fas fa-user-tag"></i> Position</p>
+                                <p id="userEmail" class="text-center"><i class="fas fa-envelope"></i> <a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="b9cccadccbf9dcc1d8d4c9d5dc97dad6d4">[email&#160;protected]</a></p>
+                                <p id="userPhone" class="text-center"><i class="fas fa-phone"></i> +1234567890</p>
+
+                                <div class="text-center">
+                                    <button class="btn btn-primary" onclick="showEditProfileModal()"><i class="fas fa-edit"></i>Edit Profile</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+              
+
+                        <!-- Edit Profile Modal -->
+                                <div id="editProfileModal" class="modal fade">
+                                    <div class="modal-dialog">
+                                        <div class="modal-content">
+                                            <div class="modal-header">
+                                                <h5 class="modal-title">Edit Profile</h5>
+                                                <!-- Corrected the button tag here -->
+                                                <button type="button" class="btn-close" data-bs-dismiss="modal" title="Close"></button>
+                                            </div>
+                                            <div class="modal-body">
+                                                <input type="hidden" id="userId">
+                                                <div class="form-group">
+                                                    <label>Full Name</label>
+                                                    <input type="text" id="fullName" class="form-control" title="Enter Full Name" placeholder="Full Name">
+                                                </div>
+                                                <div class="form-group">
+                                                    <label>Position</label>
+                                                    <input type="text" id="position" class="form-control" title="Enter Position" placeholder="Position">
+                                                </div>
+                                                <div class="form-group">
+                                                    <label>Email</label>
+                                                    <input type="email" id="email" class="form-control" title="Enter Email" placeholder="Email">
+                                                </div>
+                                                <div class="form-group">
+                                                    <label>Phone</label>
+                                                    <input type="text" id="phone" class="form-control" title="Enter Phone" placeholder="Phone">
+                                                </div>
+                                            </div>
+                                            <div class="modal-footer">
+                                                <button class="btn btn-success" onclick="updateProfile()">Update</button>
+                                                <button class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                </div>
+                
+
+                <!--------------------------------------------------------Manage Courses----------------------------------------------->
+                <div id="manage-courses" class="content-section d-none">
+                    <div class="container mt-4">
+                        <!-- Header -->
+                        <div class="d-flex justify-content-between align-items-center mb-4">
+                            <h2>Courses</h2>
+                            <button class="btn btn-primary" onclick="showAddCourseModal()">
+                                <i class="fas fa-plus"></i> Add New Course
+                            </button>
+                        </div>
+
+                        <!-- Search Bar -->
+                        <div class="mb-4">
+                            <input type="text" id="search-courses" class="form-control" placeholder="Search courses by name or code...">
+                        </div>
+                
+                    <!-- Courses Table -->
+                    <table class="table table-striped table-bordered">
+                        <thead>
+                            <tr>
+                                <th>Course Code</th>
+                                <th>Course Name</th>
+                                <th>Department</th>
+                                <th>Credits</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="courseTableBody"></tbody>
+                    </table>
+            
+                    <!-- Add/Edit Course Modal -->
+                    <div id="courseModal" class="modal fade">
+                        <div class="modal-dialog">
+                            <div class="modal-content">
+                                <div class="modal-header">
+                                    <h5 id="modalTitle">Add Course</h5>
+                                    <button type="button" class="close" data-bs-dismiss="modal">&times;</button>
+                                </div>
+                                <div class="modal-body">
+                                    <input type="hidden" id="courseId">
+                                    <div class="form-group">
+                                        <label>Course Code</label>
+                                        <input type="text" id="courseCode" class="form-control" title="Enter Course Code" placeholder="Course Code">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Course Name</label>
+                                        <input type="text" id="courseName" class="form-control" title="Enter Course Name" placeholder="Course Name">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Department</label>
+                                        <input type="text" id="department" class="form-control" title="Enter Department" placeholder="Department">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Credits</label>
+                                        <input type="number" id="credits" class="form-control" title="Enter Credits" placeholder="Credits">
+                                    </div>
+                                </div>
+                                <div class="modal-footer">
+                                    <button class="btn btn-success" onclick="saveCourse()">Save</button>
+                                    <button class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+
+                 <!--------------------------------------------------------Add Lecturers----------------------------------------------->
+                 <div id="add-lecturers" class="content-section d-none">
+                    <div class="container mt-4">
+                        <!-- Header -->
+                        <div class="d-flex justify-content-between align-items-center mb-4">
+                            <h2>Lecturers</h2>
+                            <button class="btn btn-primary" onclick="showAddLecturerModal()">
+                                <i class="fas fa-plus"></i> Add New Lecturer
+                            </button>
+                        </div>
+
+                        <!-- Search Bar -->
+                        <div class="mb-4">
+                            <input type="text" id="search-lecturers" class="form-control" placeholder="Search lecturers by name or email...">
+                        </div>
+
+                        <!-- Lecturers Table -->
+                         <div class="table-responsive">
+                            <table class="table table-striped table-bordered">
+                                <thead>
+                                    <tr>
+                                        <th>Full Name</th>
+                                        <th>Department</th>
+                                        <th>Course</th>
+                                        <th>Email</th>
+                                        <th>Phone Number</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                            </table>
+                         </div>
+
+                         <!-- Add/Edit Lecturer Modal -->
+                          <div class="modal fade" id="lecturerModal" tabindex="-1" aria-labelledby="lecturerModal" aria-hidden="true">
+                            <div class="modal-dialog">
+                                <div class="modal-content">
+                                    <div class="modal-header">
+                                        <h5 class="modal-title" id="lecturerModal-title">Add Lecturer</h5>
+                                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                                    </div>
+                                    <div class="modal-body">
+                                        <input type="hidden" id="lecturerId">
+                                        <div class="row">
+                                            <div class="mb-3">
+                                                <label for="lecturerFirstName" class="form-label">First Name</label>
+                                                <input type="text" class="form-control" id="lecturerFirstName" required>
+                                            </div>
+                                            <div class="mb-3">
+                                                <label for="lecturerLastName" class="form-label">Last Name</label>
+                                                <input type="text" class="form-control" id="lecturerLastName" required>
+                                            </div>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="lecturerEmail" class="form-label">Email</label>
+                                            <input type="email" class="form-control" id="lecturerEmail" required>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="lecturerDateOfBirth" class="form-label">Date of Birth</label>
+                                            <input type="date" class="form-control" id="lecturerDateOfBirth" required>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="lecturerGender" class="form-label">Gender</label>
+                                            <select class="form-select" id="lecturerGender" required>
+                                                <option value="">Select Gender</option>
+                                                <option value="Male">Male</option>
+                                                <option value="Female">Female</option>
+                                                <option value="Other">Other</option>
+                                            </select>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="lecturerContactNumber" class="form-label">Contact Number</label>
+                                            <input type="tel" class="form-control" id="lecturerContactNumber" required>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="lecturerAddress" class="form-label">Address</label>
+                                            <textarea class="form-control" id="lecturerAddress" rows="3" required></textarea>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="lecturerEmergencyContactName" class="form-label">Emergency Contact Name</label>
+                                            <input type="text" class="form-control" id="lecturerEmergencyContactName" required>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="lecturerEmergencyContactPhone" class="form-label">Emergency Contact Phone</label>
+                                            <input type="tel" class="form-control" id="lecturerEmergencyContactPhone" required>
+                                        </div>
+                                       
+                                        <div class="mb-3">
+                                            <label for="lecturerDepartment" class="form-label">Department</label>
+                                            <input type="text" class="form-control" id="lecturerDepartment" required>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="lecturerCourse" class="form-label">Course</label>
+                                            <select class="form-select" id="lecturerCourse" required>
+                                                <option value="">Select Course</option>
+                                                <!-- Courses will be dynamically populated here -->
+                                            </select>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="lecturerQualifications" class="form-label">Qualifications</label>
+                                            <textarea class="form-control" id="lecturerQualifications" rows="3" required></textarea>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="lecturerPosition" class="form-label">Position</label>
+                                            <input type="text" class="form-control" id="lecturerPosition" required>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="lecturerOfficeHours" class="form-label">Office Hours</label>
+                                            <input type="text" class="form-control" id="lecturerOfficeHours" required>
+                                        </div>
+                                    </div>
+
+                                    <div class="modal-footer">
+                                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                                        <button type="button" class="btn btn-primary" id="saveLecturerBtn">Save</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!--------------------------------------------------------Add Students----------------------------------------------->
+                <div id="add-students" class="content-section d-none">
+                    <div class="container mt-4">
+                        <div class="d-flex justify-content-between align-items-center mb-4">
+                            <h2>Students</h2>
+                            <button class="btn btn-primary" onclick="showAddStudentModal()">
+                                <i class="fas fa-plus"></i> Add New Student
+                            </button>
+                        </div>
+                        <div class="mb-4">
+                            <input type="text" id="search-students" class="form-control" placeholder="Search students by name or email...">
+                        </div>
+                        <table class="table table-striped table-bordered">
+                            <thead>
+                                <tr>
+                                    <th>S/N</th>
+                                    <th>Full Name</th>
+                                    <th>Email</th>
+                                    <th>Course</th>
+                                    <th>Academic Year</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="studentTableBody"></tbody>
+                        </table>
+
+                        <!-- Add/Edit Student Modal -->
+                        <div class="modal fade" id="add-edit-student-modal" tabindex="-1" aria-labelledby="add-edit-student-modal" aria-hidden="true">
+                            <div class="modal-dialog">
+                                <div class="modal-content">
+                                    <div class="modal-header">
+                                        <h5 class="modal-title" id="add-edit-student-modal-title">Add Student</h5>
+                                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                                    </div>
+                                    <div class="modal-body">
+                                        <input type="hidden" id="studentId">
+                                        <div class="mb-3">
+                                            <label for="studentFirstName" class="form-label">First Name</label>
+                                            <input type="text" class="form-control" id="studentFirstName" required>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="studentLastName" class="form-label">Last Name</label>
+                                            <input type="text" class="form-control" id="studentLastName" required>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="studentEmail" class="form-label">Email</label>
+                                            <input type="email" class="form-control" id="studentEmail" required>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="studentDateOfBirth" class="form-label">Date of Birth</label>
+                                            <input type="date" class="form-control" id="studentDateOfBirth" required>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="studentGender" class="form-label">Gender</label>
+                                            <select class="form-select" id="studentGender" required>
+                                                <option value="">Select Gender</option>
+                                                <option value="Male">Male</option>
+                                                <option value="Female">Female</option>
+                                                <option value="Other">Other</option>
+                                            </select>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="studentContactNumber" class="form-label">Contact Number</label>
+                                            <input type="tel" class="form-control" id="studentContactNumber" required>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="studentAddress" class="form-label">Address</label>
+                                            <textarea class="form-control" id="studentAddress" rows="3" required></textarea>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="studentEmergencyContactName" class="form-label">Emergency Contact Name</label>
+                                            <input type="text" class="form-control" id="studentEmergencyContactName" required>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="studentEmergencyContactPhone" class="form-label">Emergency Contact Phone</label>
+                                            <input type="tel" class="form-control" id="studentEmergencyContactPhone" required>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="studentDepartment" class="form-label">Department</label>
+                                            <input type="text" class="form-control" id="studentDepartment" required>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="studentEnrollmentDate" class="form-label">Enrollment Date</label>
+                                            <input type="date" class="form-control" id="studentEnrollmentDate" required>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="studentAcademicYear" class="form-label">Academic Year</label>
+                                            <input type="text" class="form-control" id="studentAcademicYear" required>
+                                        </div>
+                                    </div>
+
+                                    <div class="modal-footer">
+                                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                                        <button type="button" class="btn btn-primary" id="saveStudentBtn">Save</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!--------------------------------------------------------Manage Users----------------------------------------------->
+
+            </div>
+        </div>
+    </div>
+</div>
+
+<script data-cfasync="false" src="/cdn-cgi/scripts/5c5dd728/cloudflare-static/email-decode.min.js"></script><script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+<script src="js/admin-dashboard.js"></script>
+</body>
+</html>
+
+<script>
+    // frontend/js/admin-dashboard.js
+
+// Function to fetch admin profile
+document.addEventListener("DOMContentLoaded", async function () {
+    const user = JSON.parse(localStorage.getItem("user"));
+    const token = localStorage.getItem("token");
+
+    if (!token) {
+        window.location.href = "index.html"; // Redirect to login
+        return;
+    }
+
+    function setProfile() {
+        if (user) {
+            document.querySelector(".profile img").src = user.profilePicture || "img/user.jpg";
+            document.querySelector(".profile span").textContent = user.firstName || "Admin";
+        }
+    }
+
+    // async function updateDashboard() {
+    //     try {
+    //         const response = await fetch("http://localhost:5000/api/admin/dashboard", {
+    //             method: "GET",
+    //             headers: { "Authorization": `Bearer ${token}` }
+    //         });
+
+    //         const data = await response.json();
+    //         if (response.ok) {
+    //             document.getElementById("total-students").textContent = data.totalStudents || 0;
+    //             document.getElementById("total-lecturers").textContent = data.totalLecturers || 0;
+    //             document.getElementById("total-courses").textContent = data.totalCourses || 0;
+    //         } else {
+    //             alert("Failed to load dashboard data.");
+    //         }
+    //     } catch (error) {
+    //         console.error("Error fetching dashboard data:", error);
+    //         alert("An error occurred while updating the dashboard.");
+    //     }
+    // }
+
+    function logout() {
+        localStorage.removeItem("token");
+        localStorage.removeItem("user");
+        window.location.href = "index.html";
+    }
+
+    document.getElementById("logout").addEventListener("click", logout);
+
+    setProfile();
+    // updateDashboard();
+
+    // Navbar toggler for mobile
+    document.querySelector('.navbar-toggler').addEventListener('click', () => {
+        document.querySelector('.navbar-collapse').classList.toggle('show');
+    });
+
+    // Navigation handling
+    document.querySelectorAll('.nav-link').forEach(link => {
+        link.addEventListener('click', function (event) {
+            event.preventDefault();
+            document.querySelectorAll('.content-section').forEach(section => section.classList.add('d-none'));
+            document.querySelector(link.getAttribute('data-target')).classList.remove('d-none');
+
+            // Auto-collapse navbar on mobile
+            if (window.innerWidth < 992) {
+                document.querySelector('.navbar-collapse').classList.remove('show');
+            }
+        });
+    });
+
+    // Update Date and Time
+    function updateTime() {
+        let date = new Date();
+        document.getElementById('current-date').textContent = date.toDateString();
+        document.getElementById('current-time').textContent = date.toLocaleTimeString();
+    }
+    updateTime();
+    setInterval(updateTime, 1000);
+});
+
+// Function to Update My Profile section
+function updateMyProfile() {
+    const user = JSON.parse(localStorage.getItem('user'));
+    if (user) {
+        // Update the profile picture if available
+        const profilePic = document.getElementById('profile-pic');
+        if (user.profilePicture) {
+            profilePic.src = user.profilePicture; // If the user has a profile picture, update the image
+        }
+        // Update the fullName with the user's first name and last name
+        const userFullName = document.getElementById('userFullName');
+        userFullName.textContent = user.firstName + ' ' + user.lastName; // Display the full name
+
+        // Update the position with the user's position
+        const userPosition = document.getElementById('userPosition');
+        userPosition.innerHTML = `<i class="fas fa-user-tag"></i> ${user.position || 'N/A'}`; // Display the position
+
+        // Update the email with the user's email
+        const userEmail = document.getElementById('userEmail');
+        userEmail.innerHTML = `<i class="fas fa-envelope"></i> ${user.email}`; // Display the email
+
+        // Update the phone with the user's contact number
+        const userPhone = document.getElementById('userPhone');
+        userPhone.innerHTML = `<i class="fas fa-phone"></i> ${user.contactNumber || 'N/A'}`; // Display the contact number
+    }
+}
+updateMyProfile();
+
+// Function to show the Edit Profile Modal
+function showEditProfileModal() {
+    const user = JSON.parse(localStorage.getItem('user'));
+    if (user) {
+        // Populate the modal form with current user data
+        document.getElementById('userId').value = user.userId;
+        document.getElementById('fullName').value = user.firstName + ' ' + user.lastName;
+        document.getElementById('position').value = user.position || '';
+        document.getElementById('email').value = user.email;
+        document.getElementById('phone').value = user.contactNumber || '';
+        
+        // Show the modal
+        $('#editProfileModal').modal('show');
+    }
+}
+
+// Function to handle updating user profile
+function updateProfile() {
+    const userId = document.getElementById('userId').value;
+    const firstName = document.getElementById('fullName').value.split(' ')[0];
+    const lastName = document.getElementById('fullName').value.split(' ')[1];
+    const position = document.getElementById('position').value;
+    const email = document.getElementById('email').value;
+    const phone = document.getElementById('phone').value;
+
+    const profileData = { firstName, lastName, position, email, phone };
+
+    fetch(`http://localhost:5000/api/user/profile/${userId}`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${localStorage.getItem('token')}`
+        },
+        body: JSON.stringify(profileData)
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            // Update the profile on the page
+            updateMyProfile();
+            // Close the modal
+            $('#editProfileModal').modal('hide');
+        } else {
+            alert('Failed to update profile.');
+        }
+    })
+    .catch(error => {
+        console.error('Error updating profile:', error);
+        alert('An error occurred while updating your profile.');
+    });
+}
+
+
+// Global variables
+let courses = []
+let lecturers = []
+let students = []
+const API_URL = "http://localhost:5000/api"
+
+// Function to fetch courses from the server
+async function fetchCourses() {
+  try {
+    const response = await fetch(`${API_URL}/course`, {
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem("token")}`,
+      },
+    })
+    if (!response.ok) {
+      throw new Error("Failed to fetch courses")
+    }
+    courses = await response.json()
+    displayCourses()
+  } catch (error) {
+    console.error("Error fetching courses:", error)
+    alert("Failed to load courses. Please try again.")
+  }
+}
+
+// Function to display courses in the table
+function displayCourses() {
+  const tableBody = document.getElementById("courseTableBody")
+  tableBody.innerHTML = ""
+
+  courses.forEach((course) => {
+    const row = tableBody.insertRow()
+    row.innerHTML = `
+            <td>${course.courseCode}</td>
+            <td>${course.courseName}</td>
+            <td>${course.department}</td>
+            <td>${course.credits}</td>
+            <td>
+                <button class="btn btn-sm btn-primary" onclick="editCourse('${course._id}')">Edit</button>
+                <button class="btn btn-sm btn-danger" onclick="deleteCourse('${course._id}')">Delete</button>
+            </td>
+        `
+  })
+}
+
+// Function to show the add course modal
+function showAddCourseModal() {
+  document.getElementById("modalTitle").textContent = "Add Course"
+  document.getElementById("courseId").value = ""
+  document.getElementById("courseCode").value = ""
+  document.getElementById("courseName").value = ""
+  document.getElementById("department").value = ""
+  document.getElementById("credits").value = ""
+  new bootstrap.Modal(document.getElementById("courseModal")).show()
+}
+
+// Function to edit a course
+function editCourse(courseId) {
+  const course = courses.find((c) => c._id === courseId)
+  if (course) {
+    document.getElementById("modalTitle").textContent = "Edit Course"
+    document.getElementById("courseId").value = course._id
+    document.getElementById("courseCode").value = course.courseCode
+    document.getElementById("courseName").value = course.courseName
+    document.getElementById("department").value = course.department
+    document.getElementById("credits").value = course.credits
+    new bootstrap.Modal(document.getElementById("courseModal")).show()
+  }
+}
+
+// Function to save a course (create or update)
+async function saveCourse() {
+  const courseId = document.getElementById("courseId").value
+  const courseData = {
+    courseCode: document.getElementById("courseCode").value,
+    courseName: document.getElementById("courseName").value,
+    department: document.getElementById("department").value,
+    credits: Number.parseInt(document.getElementById("credits").value),
+  }
+
+  try {
+    const url = courseId ? `${API_URL}/course/${courseId}` : `${API_URL}/course`
+    const method = courseId ? "PUT" : "POST"
+    const response = await fetch(url, {
+      method: method,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${localStorage.getItem("token")}`,
+      },
+      body: JSON.stringify(courseData),
+    })
+
+    if (!response.ok) {
+      throw new Error("Failed to save course")
+    }
+
+    bootstrap.Modal.getInstance(document.getElementById("courseModal")).hide()
+    fetchCourses()
+  } catch (error) {
+    console.error("Error saving course:", error)
+    alert("Failed to save course. Please try again.")
+  }
+}
+
+// Function to delete a course
+async function deleteCourse(courseId) {
+  if (confirm("Are you sure you want to delete this course?")) {
+    try {
+      const response = await fetch(`${API_URL}/course/${courseId}`, {
+        method: "DELETE",
+        headers: {
+          Authorization: `Bearer ${localStorage.getItem("token")}`,
+        },
+      })
+
+      if (!response.ok) {
+        throw new Error("Failed to delete course")
+      }
+
+      fetchCourses()
+    } catch (error) {
+      console.error("Error deleting course:", error)
+      alert("Failed to delete course. Please try again.")
+    }
+  }
+}
+
+
+
+// Function to fetch lecturers from the server
+async function fetchLecturers() {
+    try {
+        const response = await fetch(`${API_URL}/lecturer`, {
+        headers: {
+            Authorization: `Bearer ${localStorage.getItem("token")}`,
+        },
+        })
+        if (!response.ok) {
+        throw new Error("Failed to fetch lecturers")
+        }
+        lecturers = await response.json()
+        displayLecturers()
+    } catch (error) {
+        console.error("Error fetching lecturers:", error)
+        alert("Failed to load lecturers. Please try again.")
+    }
+}
+
+    // Function to fetch courses from the server
+    async function fetchCourses() {
+        try {
+            const response = await fetch(`${API_URL}/course`, {
+            headers: {
+                Authorization: `Bearer ${localStorage.getItem("token")}`,
+            },
+            })
+            if (!response.ok) {
+            throw new Error("Failed to fetch courses")
+            }
+            courses = await response.json()
+            displayCourses()
+        } catch (error) {
+            console.error("Error fetching courses:", error)
+            alert("Failed to load courses. Please try again.")
+        }
+    }
+
+    // Function to display lecturers in the table
+    function displayLecturers() {
+    const tableBody = document.getElementById("lecturerTableBody")
+    tableBody.innerHTML = ""
+
+    lecturers.forEach((lecturer) => {
+        const row = tableBody.insertRow()
+        row.innerHTML = `
+                <td>${lecturer.fullName}</td>
+                <td>${lecturer.department}</td>
+                <td>${lecturer.course}</td>
+                <td>${lecturer.email}</td>
+                <td>${lecturer.contactNumber}</td>
+                <td>
+                    <button class="btn btn-sm btn-primary" onclick="editLecturer('${lecturer._id}')">Edit</button>
+                    <button class="btn btn-sm btn-danger" onclick="deleteLecturer('${lecturer._id}')">Delete</button>
+                </td>
+            `
+        })
+    }
+
+// Function to show the add lecturer modal
+function showAddLecturerModal() {
+document.getElementById("modalTitle").textContent = "Add Lecturer"
+document.getElementById("lecturerId").value = ""
+document.getElementById("lecturerFirstName").value = ""
+document.getElementById("lecturerLastName").value = ""
+document.getElementById("lecturerEmail").value = ""
+document.getElementById("lecturerDateOfBirth").value = ""
+document.getElementById("lecturerGender").value = ""
+document.getElementById("lecturerContactNumber").value = ""
+document.getElementById("lecturerAddress").value = ""
+document.getElementById("lecturerEmergencyContactName").value = ""
+document.getElementById("lecturerEmergencyContactPhone").value = ""
+document.getElementById("lecturerDepartment").value = ""
+document.getElementById("lecturerCourse").value = ""
+document.getElementById("lecturerQualifications").value = ""
+document.getElementById("lecturerPosition").value = ""
+document.getElementById("lecturerOfficeHours").value = ""
+new bootstrap.Modal(document.getElementById("lecturerModal")).show()
+}
+
+
+// Function to edit a lecturer
+function editLecturer(lecturerId) {
+    const lecturer = lecturers.find((l) => l._id === lecturerId)
+    if (lecturer) {
+        document.getElementById("lecturerModal-title").textContent = "Edit Lecturer"
+        document.getElementById("lecturerId").value = lecturer._id
+        document.getElementById("lecturerFirstName").value = lecturer.firstName
+        document.getElementById("lecturerLastName").value = lecturer.lastName
+        document.getElementById("lecturerEmail").value = lecturer.email
+        document.getElementById("lecturerDateOfBirth").value = lecturer.dateOfBirth
+        document.getElementById("lecturerGender").value = lecturer.gender
+        document.getElementById("lecturerContactNumber").value = lecturer.contactNumber
+        document.getElementById("lecturerAddress").value = lecturer.address
+        document.getElementById("lecturerEmergencyContactName").value = lecturer.emergencyContactName
+        document.getElementById("lecturerEmergencyContactPhone").value = lecturer.emergencyContactPhone
+        document.getElementById("lecturerDepartment").value = lecturer.department
+        document.getElementById("lecturerCourse").value = lecturer.course
+        document.getElementById("lecturerQualifications").value = lecturer.qualifications
+        document.getElementById("lecturerPosition").value = lecturer.position
+        document.getElementById("lecturerOfficeHours").value = lecturer.officeHours
+        new bootstrap.Modal(document.getElementById("lecturerModal")).show()
+    }
+}
+
+// Function to save a lecturer (create or update)
+function saveLecturer() {
+    const lecturerId = document.getElementById("lecturerId").value
+    const lecturerData = {
+        firstName: document.getElementById("lecturerFirstName").value,
+        lastName: document.getElementById("lecturerLastName").value,
+        email: document.getElementById("lecturerEmail").value,
+        dateOfBirth: document.getElementById("lecturerDateOfBirth").value,
+        gender: document.getElementById("lecturerGender").value,
+        contactNumber: document.getElementById("lecturerContactNumber").value,
+        address: document.getElementById("lecturerAddress").value,
+        emergencyContactName: document.getElementById("lecturerEmergencyContactName").value,
+        emergencyContactPhone: document.getElementById("lecturerEmergencyContactPhone").value,
+        department: document.getElementById("lecturerDepartment").value,
+        course: document.getElementById("lecturerCourse").value,
+        qualifications: document.getElementById("lecturerQualifications").value,
+        position: document.getElementById("lecturerPosition").value,
+        officeHours: document.getElementById("lecturerOfficeHours").value,
+    }
+    if (lecturerId) {
+        updateLecturer(lecturerId, lecturerData)
+    } else {
+        createLecturer(lecturerData)
+    }
+}
+
+// Function to create a new lecturer
+function createLecturer(lecturerData) {
+    fetch('/lecturers', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(lecturerData),
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            fetchLecturers()
+            new bootstrap.Modal(document.getElementById("lecturerModal")).hide()
+        } else {
+            alert('Failed to create lecturer.')
+        }
+    })
+}
+
+// Function to update a lecturer
+function updateLecturer(lecturerId, lecturerData) {
+    fetch(`/lecturers/${lecturerId}`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(lecturerData),
+    })
+    .then(response => response.json())
+
+    .then(data => {
+        if (data.success) {
+            fetchLecturers()
+            new bootstrap.Modal(document.getElementById("lecturerModal")).hide()
+        } else {
+            alert('Failed to update lecturer.')
+        }
+    })
+}
+
+// Function to delete a lecturer
+function deleteLecturer(lecturerId) {
+    fetch(`/lecturers/${lecturerId}`, {
+        method: 'DELETE',
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            fetchLecturers()
+        } else {
+            alert('Failed to delete lecturer.')
+        }
+    })
+}
+
+// Initial fetch of lecturers when the page loads
+document.addEventListener("DOMContentLoaded", fetchLecturers)
+
+// Initial fetch of courses when the page loads
+document.addEventListener("DOMContentLoaded", fetchCourses)
+
+// Global variables
+
+
+
+// Function to fetch students from the server
+async function fetchStudents() {
+  try {
+    const response = await fetch(`${API_URL}/user/students`, {
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem("token")}`,
+      },
+    })
+    if (!response.ok) {
+      throw new Error("Failed to fetch students")
+    }
+    students = await response.json()
+    displayStudents()
+  } catch (error) {
+    console.error("Error fetching students:", error)
+    alert("Failed to load students. Please try again.")
+  }
+}
+
+// Function to display students in the table
+function displayStudents() {
+  const tableBody = document.getElementById("studentTableBody")
+  tableBody.innerHTML = ""
+
+  students.forEach((student, index) => {
+    const row = tableBody.insertRow()
+    row.innerHTML = `
+            <td>${index + 1}</td>
+            <td>${student.firstName} ${student.lastName}</td>
+            <td>${student.email}</td>
+            <td>${student.department}</td>
+            <td>${student.academicYear}</td>
+            <td>
+                <button class="btn btn-sm btn-primary" onclick="editStudent('${student._id}')">Edit</button>
+                <button class="btn btn-sm btn-danger" onclick="deleteStudent('${student._id}')">Delete</button>
+            </td>
+        `
+  })
+}
+
+// Function to show the add student modal
+function showAddStudentModal() {
+  document.getElementById("add-edit-student-modal-title").textContent = "Add Student"
+  document.getElementById("studentId").value = ""
+  document.getElementById("studentFirstName").value = ""
+  document.getElementById("studentLastName").value = ""
+  document.getElementById("studentEmail").value = ""
+  document.getElementById("studentDateOfBirth").value = ""
+  document.getElementById("studentGender").value = ""
+  document.getElementById("studentContactNumber").value = ""
+  document.getElementById("studentAddress").value = ""
+  document.getElementById("studentEmergencyContactName").value = ""
+  document.getElementById("studentEmergencyContactPhone").value = ""
+  document.getElementById("studentDepartment").value = ""
+  document.getElementById("studentEnrollmentDate").value = ""
+  document.getElementById("studentAcademicYear").value = ""
+  const bootstrap = window.bootstrap
+  new bootstrap.Modal(document.getElementById("add-edit-student-modal")).show()
+}
+
+// Function to edit a student
+function editStudent(studentId) {
+  const student = students.find((s) => s._id === studentId)
+  if (student) {
+    document.getElementById("add-edit-student-modal-title").textContent = "Edit Student"
+    document.getElementById("studentId").value = student._id
+    document.getElementById("studentFirstName").value = student.firstName
+    document.getElementById("studentLastName").value = student.lastName
+    document.getElementById("studentEmail").value = student.email
+    document.getElementById("studentDateOfBirth").value = student.dateOfBirth.split("T")[0]
+    document.getElementById("studentGender").value = student.gender
+    document.getElementById("studentContactNumber").value = student.contactNumber
+    document.getElementById("studentAddress").value = student.address
+    document.getElementById("studentEmergencyContactName").value = student.emergencyContact.name
+    document.getElementById("studentEmergencyContactPhone").value = student.emergencyContact.phone
+    document.getElementById("studentDepartment").value = student.department
+    document.getElementById("studentEnrollmentDate").value = student.enrollmentDate.split("T")[0]
+    document.getElementById("studentAcademicYear").value = student.academicYear
+    const bootstrap = window.bootstrap
+    new bootstrap.Modal(document.getElementById("add-edit-student-modal")).show()
+  }
+}
+
+// Function to save a student (create or update)
+async function saveStudent() {
+  const studentId = document.getElementById("studentId").value
+  const studentData = {
+    firstName: document.getElementById("studentFirstName").value,
+    lastName: document.getElementById("studentLastName").value,
+    email: document.getElementById("studentEmail").value,
+    dateOfBirth: document.getElementById("studentDateOfBirth").value,
+    gender: document.getElementById("studentGender").value,
+    contactNumber: document.getElementById("studentContactNumber").value,
+    address: document.getElementById("studentAddress").value,
+    emergencyContact: {
+      name: document.getElementById("studentEmergencyContactName").value,
+      phone: document.getElementById("studentEmergencyContactPhone").value,
+    },
+    department: document.getElementById("studentDepartment").value,
+    enrollmentDate: document.getElementById("studentEnrollmentDate").value,
+    academicYear: document.getElementById("studentAcademicYear").value,
+  }
+
+  try {
+    const url = studentId ? `${API_URL}/user/student/${studentId}` : `${API_URL}/user/student`
+    const method = studentId ? "PUT" : "POST"
+    const response = await fetch(url, {
+      method: method,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${localStorage.getItem("token")}`,
+      },
+      body: JSON.stringify(studentData),
+    })
+
+    if (!response.ok) {
+      throw new Error("Failed to save student")
+    }
+
+    const bootstrap = window.bootstrap
+    bootstrap.Modal.getInstance(document.getElementById("add-edit-student-modal")).hide()
+    fetchStudents()
+  } catch (error) {
+    console.error("Error saving student:", error)
+    alert("Failed to save student. Please try again.")
+  }
+}
+
+// Function to delete a student
+async function deleteStudent(studentId) {
+  if (confirm("Are you sure you want to delete this student?")) {
+    try {
+      const response = await fetch(`${API_URL}/user/student/${studentId}`, {
+        method: "DELETE",
+        headers: {
+          Authorization: `Bearer ${localStorage.getItem("token")}`,
+        },
+      })
+
+      if (!response.ok) {
+        throw new Error("Failed to delete student")
+      }
+
+      fetchStudents()
+    } catch (error) {
+      console.error("Error deleting student:", error)
+      alert("Failed to delete student. Please try again.")
+    }
+  }
+}
+
+// Initial fetch of students when the page loads
+document.addEventListener("DOMContentLoaded", fetchStudents)
+
+// Event listener for the save student button
+document.getElementById("saveStudentBtn").addEventListener("click", saveStudent)
+</script>
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - CESSTIG</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <link rel="icon" href="img/logo.png" type="image/x-icon">
+    <link rel="stylesheet" href="css/style.css">
+</head>
+
+<body class="bg-light d-flex justify-content-center align-items-center vh-100">
+    <div class="card shadow p-4">
+        <div class="card-body">
+            <h3 class="card-title text-center mb-4">CESSTIG Login</h3>
+            <form id="loginForm">
+                <div class="mb-3">
+                    <label for="role" class="form-label">Select Role</label>
+                    <select id="role" name="role" class="form-select" required>
+                        <option value="" selected disabled>Choose your role</option>
+                        <option value="student">Student</option>
+                        <option value="lecturer">Lecturer</option>
+                        <option value="admin">Admin</option>
+                    </select>
+                </div>
+                <div class="mb-3">
+                    <label for="email" class="form-label">Email</label>
+                    <input type="email" id="email" name="email" class="form-control" placeholder="Enter your email" required>
+                </div>
+                <div class="mb-3 position-relative">
+                    <label for="password" class="form-label">Password</label>
+                    <div class="input-group">
+                        <input type="password" id="password" name="password" class="form-control" placeholder="Enter your password" required>
+                        <button type="button" class="btn btn-outline-secondary" id="togglePassword" title="Show/Hide Password">
+                            <i class="fas fa-eye"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="d-flex justify-content-between mb-3">
+                    <a href="#" id="forgotPassword" class="text-decoration-none">Forgot Password?</a>
+                </div>
+                <button type="submit" class="btn btn-primary w-100" id="loginBtn">
+                    Login
+                </button>
+                <div class="text-center mt-3">
+                    <span id="errorMessage" class="text-danger"></span>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script src="js/index.js"></script>
+</body>
+</html>
+
+<script>
+    // frontend/js/index.js
+    
+
+document.getElementById("loginForm").addEventListener("submit", async function (e) {
+    e.preventDefault();
+
+    const role = document.getElementById("role").value;
+    const email = document.getElementById("email").value;
+    const password = document.getElementById("password").value;
+    const loginButton = document.querySelector("#loginForm button[type='submit']");
+    const errorMessage = document.getElementById("errorMessage");
+
+    // Reset error message
+    errorMessage.textContent = "";
+
+    // Basic form validation
+    if (!role || !email || !password) {
+        errorMessage.textContent = "Please fill in all fields.";
+        return;
+    }
+
+    // Disable button and show loading state
+    loginButton.disabled = true;
+    loginButton.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Logging in...';
+
+    try {
+        const response = await fetch("http://localhost:5000/api/auth/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ role, email, password }) // Include role in request
+        });
+
+        const data = await response.json();
+
+        if (response.ok) {
+            localStorage.setItem("token", data.token);
+            localStorage.setItem("user", JSON.stringify(data.user)); // Store user info
+
+            // Redirect based on role
+            if (data.role === "Student") {
+                window.location.href = "student-dashboard.html";
+            } else if (data.role === "Lecturer") {
+                window.location.href = "lecturer-dashboard.html";
+            } else if (data.role === "Admin") {
+                window.location.href = "admin-dashboard.html";
+            }
+        } else {
+            errorMessage.textContent = data.message;
+        }
+    } catch (error) {
+        console.error("Login error:", error);
+        errorMessage.textContent = "An error occurred. Please try again.";
+    } finally {
+        // Re-enable button
+        loginButton.disabled = false;
+        loginButton.innerHTML = "Login";
+    }
+});
+
+// Password visibility toggle
+document.getElementById("togglePassword").addEventListener("click", function () {
+    const passwordField = document.getElementById("password");
+    const toggleIcon = document.getElementById("togglePassword").querySelector("i");
+
+    if (passwordField.type === "password") {
+        passwordField.type = "text";
+        toggleIcon.classList.remove("bi-eye");
+        toggleIcon.classList.add("bi-eye-slash");
+    } else {
+        passwordField.type = "password";
+        toggleIcon.classList.remove("bi-eye-slash");
+        toggleIcon.classList.add("bi-eye");
+    }
+});
+
+</script>
+
+<style>
+    /* frontend/css/style.css */
+  /*frontend/css/style.css*/
+:root {
+    --primary-color: #042954;
+    --secondary-color: #faa11d;
+    --light-bg: #f8f9fa;
+    --text-color: #333;
+}
+
+/* Body Styling */
+body {
+    background: linear-gradient(rgba(4, 41, 84, 0.8), rgba(4, 41, 84, 0.8)), 
+                url('../img/logo.png') center/cover no-repeat;
+    color: var(--text-color);
+}
+
+/* Card Styling */
+.card {
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+    border-radius: 10px;
+    background: white;
+    width: 450px;
+}
+
+/* Form Inputs */
+.form-control {
+    border-radius: 5px;
+    padding: 10px;
+    border: 1px solid #ccc;
+    transition: border 0.3s;
+}
+
+.form-control:focus {
+    border-color: var(--secondary-color);
+    box-shadow: 0 0 5px rgba(250, 161, 29, 0.5);
+}
+
+/* Button Styling */
+.btn-primary {
+    background-color: var(--primary-color);
+    border: none;
+    padding: 10px;
+    font-size: 16px;
+    transition: all 0.3s;
+}
+
+.btn-primary:hover {
+    background-color: var(--secondary-color);
+}
+
+/* Forgot Password Link */
+#forgotPassword {
+    font-size: 14px;
+    color: var(--primary-color);
+}
+
+#forgotPassword:hover {
+    text-decoration: underline;
+}
+
+/* Error Message */
+#errorMessage {
+    font-size: 14px;
+    display: none; /* Initially hidden */
+}
+
+</style>
+
+<style>
+    /* frontend/css/admin.css */
+    :root {
+    --primary-color: #042954;
+    --secondary-color: #faa11d;
+}
+body {
+    /*background-image*/
+    background-image: url('img/logo.png');
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+    background-blend-mode: overlay;
+   
+}
+.header {
+    background-color: var(--primary-color);
+    padding: 10px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.logo {
+    display: flex;
+    align-items: center;
+}
+.logo img {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+}
+.logo h2 {
+    font-size: 1.5rem;
+    font-weight: bold;
+    margin-left: 5px;
+}
+.user {
+    display: flex;
+    align-items: center;
+    gap: 3rem;
+}
+.profile img {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+}
+.notification {
+    position: relative;
+}
+.notification i {
+    font-size: 1.5rem;
+    color: white;
+}
+.navbar {
+    background-color: #d1cfcd;
+}
+.navbar .container {
+    display: flex;
+    justify-content: space-between;
+}
+.nav-menu ul {
+    display: flex;
+    list-style: none;
+}
+.nav-menu ul li {
+    margin-right: 20px;
+}
+.nav-menu ul li a {
+    color: var(--primary-color);
+    text-decoration: none;
+}
+.nav-menu ul li a:hover {
+    text-decoration: none;
+    color: var(--secondary-color);
+}
+.nav-menu ul li a.active {
+    color: var(--secondary-color);
+}
+#logout {
+    color: blue
+}
+#main-content {
+    margin-top: 20px;
+    opacity: 100%;
+    background-color: transparent;
+  
+}
+.card {
+    margin-top: 20px;
+}
+
+
+/* General Styling */
+#manage-courses, #add-lecturers, #add-students {
+    padding: 20px;
+    background-color: #f8f9fa;
+    border-radius: 10px;
+}
+
+/* Heading */
+#manage-courses h2, 
+#add-lecturers h2, 
+#add-students h2 {
+    color: #333;
+    font-weight: bold;
+    margin-bottom: 20px;
+}
+
+/* Buttons */
+#manage-courses .btn, 
+#add-lecturers .btn, 
+#add-students .btn {
+    border-radius: 5px;
+}
+
+#manage-courses .btn-primary, 
+#add-lecturers .btn-primary, 
+#add-students .btn-primary {
+    background-color: #007bff;
+    border-color: #007bff;
+}
+
+#manage-courses .btn-primary:hover, 
+#add-lecturers .btn-primary:hover, 
+#add-students .btn-primary:hover {
+    background-color: #0056b3;
+}
+
+#manage-courses .btn-warning, 
+#add-lecturers .btn-warning, 
+#add-students .btn-warning {
+    background-color: #ffc107;
+    border-color: #ffc107;
+    color: #000;
+}
+
+#manage-courses .btn-warning:hover, 
+#add-lecturers .btn-warning:hover,
+#add-students .btn-warning:hover {
+    background-color: #d39e00;
+} 
+
+
+#manage-courses .btn-danger, 
+#add-lecturers .btn-danger,
+#add-students .btn-danger {
+    background-color: #dc3545;
+    border-color: #dc3545;
+}
+
+#manage-courses .btn-danger:hover, 
+#add-lecturers .btn-danger:hover,
+#add-students .btn-danger:hover {
+    background-color: #c82333;
+}
+
+/* Table Styling */
+#manage-courses .table, 
+#add-lecturers .table,
+#add-students .table {
+    width: 100%;
+    border-collapse: collapse;
+    background: #fff;
+    border-radius: 5px;
+    overflow: hidden;
+}
+
+#manage-courses .table thead, 
+#add-lecturers .table thead,
+#add-students .table thead {
+    background-color: #007bff;
+    color: white;
+}
+
+#manage-courses .table th,
+#manage-courses .table td,
+#add-lecturers .table th,
+#add-lecturers .table td,
+#add-students .table th,
+#add-students .table td {
+    padding: 12px;
+    text-align: left;
+    border-bottom: 1px solid #ddd;
+}
+
+#manage-courses .table tbody tr:hover,
+#add-lecturers .table tbody tr:hover,
+#add-students .table tbody tr:hover {
+    background-color: #f1f1f1;
+}
+
+/* Modal Styling */
+.modal-content {
+    border-radius: 10px;
+}
+
+.modal-header {
+    background-color: #007bff;
+    color: white;
+}
+
+.modal-footer {
+    justify-content: space-between;
+}
+
+/* Form Inputs */
+.form-group label {
+    font-weight: bold;
+    margin-top: 15px;
+}
+
+.form-control {
+    border-radius: 5px;
+    border: 1px solid #ccc;
+}
+
+.form-control:focus {
+    border-color: #007bff;
+    box-shadow: 0 0 5px rgba(0, 123, 255, 0.5);
+}
+</style>
+
+
+
